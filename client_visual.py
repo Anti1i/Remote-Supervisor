@@ -57,15 +57,22 @@ class VisualClientUI(tk.Tk):
         tk.Label(input_frame, text="Target IP:", bg=COLORS['bg_lighter'],
                 fg='white', font=FONTS['body']).grid(row=0, column=0, padx=10, pady=10, sticky='e')
         self.entry_ip = tk.Entry(input_frame, font=FONTS['mono'], bg='#333',
-                                fg='white', insertbackground='white', width=25)
+                                fg='white', insertbackground='white', width=18)
         self.entry_ip.insert(0, "127.0.0.1")
         self.entry_ip.grid(row=0, column=1, padx=10, pady=10)
 
-        tk.Label(input_frame, text="Password:", bg=COLORS['bg_lighter'],
+        tk.Label(input_frame, text="Port:", bg=COLORS['bg_lighter'],
                 fg='white', font=FONTS['body']).grid(row=1, column=0, padx=10, pady=10, sticky='e')
+        self.entry_port = tk.Entry(input_frame, font=FONTS['mono'], bg='#333',
+                                  fg='white', insertbackground='white', width=18)
+        self.entry_port.insert(0, str(SERVER_PORT))  # 默认端口
+        self.entry_port.grid(row=1, column=1, padx=10, pady=10)
+
+        tk.Label(input_frame, text="Password:", bg=COLORS['bg_lighter'],
+                fg='white', font=FONTS['body']).grid(row=2, column=0, padx=10, pady=10, sticky='e')
         self.entry_pwd = tk.Entry(input_frame, show="●", font=FONTS['mono'],
-                                 bg='#333', fg='white', insertbackground='white', width=25)
-        self.entry_pwd.grid(row=1, column=1, padx=10, pady=10)
+                                 bg='#333', fg='white', insertbackground='white', width=18)
+        self.entry_pwd.grid(row=2, column=1, padx=10, pady=10)
 
         # 连接按钮
         btn_connect = tk.Button(self.login_frame, text="▶ ESTABLISH CONNECTION",
@@ -76,8 +83,9 @@ class VisualClientUI(tk.Tk):
 
     def _init_dashboard_ui(self):
         """初始化主界面"""
-        # 在销毁前保存IP地址
+        # 在销毁前保存IP地址和端口
         self.target_ip = self.entry_ip.get()
+        self.target_port = int(self.entry_port.get())
         self.login_frame.destroy()
 
         # 顶部状态栏
@@ -128,7 +136,7 @@ class VisualClientUI(tk.Tk):
         tk.Label(left_frame, text="● CONNECTED", font=FONTS['status'],
                 bg=COLORS['bg_lighter'], fg=COLORS['fg_success']).pack(anchor='w')
 
-        self.lbl_target = tk.Label(left_frame, text=f"Target: {self.target_ip}",
+        self.lbl_target = tk.Label(left_frame, text=f"Target: {self.target_ip}:{self.target_port}",
                                   font=FONTS['mono'], bg=COLORS['bg_lighter'], fg=COLORS['fg_secondary'])
         self.lbl_target.pack(anchor='w')
 
@@ -494,23 +502,26 @@ class VisualClientUI(tk.Tk):
 
         def _start():
             try:
+                # 发送启动请求
                 with self.sock_lock:
-                    # 使用 VIDEO_START 消息启动摄像头流
                     msg = create_video_start_message(width=640, height=480, fps=30, quality=quality)
                     send_message(self.sock, msg)
                     resp = receive_message(self.sock)
 
-                    if resp and resp['type'] == MessageType.VIDEO_START:
-                        if resp['data'].get('success'):
-                            self.camera_streaming = True
-                            self.after(0, lambda: self.btn_start_camera.config(state='disabled'))
-                            self.after(0, lambda: self.btn_stop_camera.config(state='normal'))
-                            # 开始接收视频帧
-                            threading.Thread(target=self._camera_stream_loop, daemon=True).start()
-                            self.add_history("Camera", "Started camera video stream", "Success")
-                        else:
-                            error = resp['data'].get('error', 'Unknown error')
-                            self.after(0, lambda: messagebox.showerror("Error", f"Failed to start camera: {error}"))
+                # 在锁外处理响应
+                if resp and resp['type'] == MessageType.VIDEO_START:
+                    if resp['data'].get('success'):
+                        self.camera_streaming = True
+                        self.after(0, lambda: self.btn_start_camera.config(state='disabled'))
+                        self.after(0, lambda: self.btn_stop_camera.config(state='normal'))
+                        self.add_history("Camera", "Started camera video stream", "Success")
+                        # 在锁释放后启动接收线程
+                        self._camera_stream_loop()
+                    else:
+                        error = resp['data'].get('error', 'Unknown error')
+                        self.after(0, lambda: messagebox.showerror("Error", f"Failed to start camera: {error}"))
+                else:
+                    self.after(0, lambda: messagebox.showerror("Error", "Invalid response from server"))
             except Exception as e:
                 print(f"Start camera stream error: {e}")
                 self.after(0, lambda: messagebox.showerror("Error", f"Camera error: {e}"))
@@ -1199,10 +1210,18 @@ class VisualClientUI(tk.Tk):
         ip = self.entry_ip.get()
         pwd = self.entry_pwd.get()
 
+        # 获取端口号
+        try:
+            port = int(self.entry_port.get())
+        except ValueError:
+            messagebox.showerror("Error", "Invalid port number")
+            return
+
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(5)
-            self.sock.connect((ip, SERVER_PORT))
+            self.sock.connect((ip, port))
+            self.connected_port = port  # 保存连接的端口
 
             # 身份验证
             import hashlib
@@ -1216,7 +1235,7 @@ class VisualClientUI(tk.Tk):
                 self.is_connected = True
                 self.sock.settimeout(None)
                 self._init_dashboard_ui()
-                self.add_history("Connection", f"Connected to {ip}:{SERVER_PORT}", "Success")
+                self.add_history("Connection", f"Connected to {ip}:{port}", "Success")
             else:
                 messagebox.showerror("Error", "Authentication Failed")
                 self.sock.close()
